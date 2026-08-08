@@ -14,7 +14,8 @@ set -e
 #                - docker commands auto-prefix sudo when the user is not in the
 #                  'docker' group;
 #                - robust GitHub release version resolution.
-#              The core is always downloaded and embedded into the image.
+#              Custom core install is OPTIONAL (default N); when declined, the
+#              Xray core bundled in the remnawave/node base image is used.
 # Xray core source: https://github.com/XTLS/Xray-core
 # ============================================================================
 
@@ -660,7 +661,7 @@ select_xray_version() {
     echo ""
     echo -e "  ${CYAN}m${NC}) Enter version manually"
     echo -e "  ${CYAN}s${NC}) Latest stable release"
-    echo -e "  ${CYAN}q${NC}) Skip selection (use latest)"
+    echo -e "  ${RED}q${NC}) Cancel custom core installation"
     echo ""
 
     while true; do
@@ -816,36 +817,38 @@ download_xray_core() {
     return 0
 }
 
-# Функция установки кастомного ядра (отдельно от .env).
-# Ядро из ${XRAY_REPO} встраивается ВСЕГДА, без опционального вопроса.
-# Пользователь может лишь выбрать версию; отмена/пустой выбор => используется
-# latest (пропуск установки невозможен — ядро обязательно).
+# Функция настройки кастомного ядра (отдельно от .env).
+# Поведение ОРИГИНАЛЬНОЕ: установка опциональна (по умолчанию N). При отказе
+# используется ядро Xray, уже вшитое в базовый образ remnawave/node. Скачивание
+# из ${XRAY_REPO} нужно, только если хочешь зафиксировать конкретную версию ядра.
 setup_custom_core() {
     local target_dir="${1:-.}"
+    local install_custom_core=""
     local xray_version=""
 
     echo ""
-    echo -e "${CYAN}Xray Core (${XRAY_REPO}):${NC}"
-    echo -e "${CYAN}Ядро Xray из форка будет встроено в образ (обязательный шаг).${NC}"
+    echo -e "${CYAN}Custom Xray Core (optional, source: ${XRAY_REPO}):${NC}"
+    read_input -p "Install custom Xray core? [y/N]: " install_custom_core
 
-    if select_xray_version; then
-        xray_version="$SELECTED_XRAY_VERSION"
-    else
-        # Ядро обязательно: отмена выбора => latest, а не пропуск установки.
-        xray_version="latest"
-        echo -e "${YELLOW}Версия не выбрана — используется latest.${NC}"
+    if [[ ! "$install_custom_core" =~ ^[Yy]$ ]]; then
+        echo -e "${YELLOW}Пропущено — будет использовано ядро из базового образа remnawave/node.${NC}"
+        return 0
     fi
 
+    if ! select_xray_version; then
+        echo -e "${YELLOW}Custom Xray core installation cancelled.${NC}"
+        return 0
+    fi
+
+    xray_version="$SELECTED_XRAY_VERSION"
     echo ""
     echo -e "${CYAN}Selected Xray version: ${BOLD}${xray_version}${NC}"
 
     if download_xray_core "$target_dir" "$xray_version"; then
         echo -e "${GREEN}✓${NC} Xray core (${XRAY_REPO}) downloaded to $target_dir/xray-core/"
         echo -e "${GREEN}✓${NC} Core will be embedded in Docker image during build"
-        return 0
     else
         echo -e "${RED}✗${NC} Failed to download Xray core from ${XRAY_REPO}"
-        echo -e "${RED}  Ядро обязательно: прерываю, чтобы образ не собрался со штатным XTLS-ядром.${NC}"
         return 1
     fi
 }
