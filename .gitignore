@@ -1,0 +1,7 @@
+# Артефакты, которые rnode.sh генерирует в рабочей папке
+.env
+.env.example
+.Dockerfile
+docker-compose.yml
+docker-entrypoint.sh
+xray-core/
