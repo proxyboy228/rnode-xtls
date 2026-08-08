@@ -4,4 +4,5 @@
 .Dockerfile
 docker-compose.yml
 docker-entrypoint.sh
+bin/
 xray-core/

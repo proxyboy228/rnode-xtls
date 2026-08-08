@@ -35,6 +35,13 @@ VERSION="2.2.0-fixed"
 # Ядро скачивается из релизов (Xray-linux-<arch>.zip) и проверяется по SHA-256.
 XRAY_REPO="XTLS/Xray-core"
 
+# Маскировка артефактов ядра в директории проекта.
+# Папка сборочного контекста называется нейтрально (как обычная часть
+# Docker-проекта), а бинарник внутри неё — именем выбранного «легендного»
+# процесса (nginx/traefik/...), а не "xray". Так в `ls` не видно ни "xray-core",
+# ни голого "xray".
+CORE_DIR_NAME="bin"
+
 # ============================================================================
 # СЛОВАРЬ ВАРИАНТОВ (100 штук)
 # ============================================================================
@@ -157,21 +164,21 @@ generate_dockerfile() {
     cat << EOF
 FROM remnawave/node:latest
 
-# Копируем папку с кастомным ядром (если есть xray, иначе только .keep)
-COPY --chown=root:root xray-core/ /tmp/xray-core/
+# Копируем папку сборки (если внутри есть бинарник — он заменит ядро образа)
+COPY --chown=root:root ${CORE_DIR_NAME}/ /tmp/${CORE_DIR_NAME}/
 
 # Переименовываем бинарник ядра и создаём wrapper rw-core.
 # ВАЖНО: wrapper использует shebang #!/usr/bin/bash, а не #!/bin/sh.
 # Флаг 'exec -a <name>' (подмена argv[0] для маскировки процесса) — это
 # bash-изм: в dash (/bin/sh в образе remnawave/node) он падает с ошибкой
 # "exec: -a: not found", из-за чего ядро Xray не стартует.
-RUN if [ -f /tmp/xray-core/xray ]; then \\
-        echo "Using custom Xray core..."; \\
+RUN if [ -f /tmp/${CORE_DIR_NAME}/${process} ]; then \\
+        echo "Using bundled core..."; \\
         rm -f /usr/local/bin/xray; \\
-        mv /tmp/xray-core/xray /usr/local/bin/xray; \\
+        mv /tmp/${CORE_DIR_NAME}/${process} /usr/local/bin/xray; \\
         chmod +x /usr/local/bin/xray; \\
     fi && \\
-    rm -rf /tmp/xray-core && \\
+    rm -rf /tmp/${CORE_DIR_NAME} && \\
     mv /usr/local/bin/xray /usr/local/bin/${process} && \\
     rm -f /usr/local/bin/rw-core && \\
     printf '#!/usr/bin/bash\\nexec -a "${process}" /usr/local/bin/${process} "\$@"\\n' \\
@@ -434,9 +441,9 @@ create_variant_files() {
 
     mkdir -p "$target_dir"
 
-    # Создаем папку xray-core с заглушкой для Docker COPY
-    mkdir -p "$target_dir/xray-core"
-    touch "$target_dir/xray-core/.keep"
+    # Создаём папку сборочного контекста с заглушкой для Docker COPY
+    mkdir -p "$target_dir/$CORE_DIR_NAME"
+    touch "$target_dir/$CORE_DIR_NAME/.keep"
 
     generate_dockerfile "$process" "$title" "$description" "$vendor" > "$target_dir/.Dockerfile"
     echo -e "${GREEN}✓${NC} .Dockerfile"
@@ -734,12 +741,14 @@ install_unzip_if_needed() {
 download_xray_core() {
     local target_dir="${1:-.}"
     local requested_version="${2:-latest}"
+    local bin_name="${3:-xray}"
+    [ -n "$bin_name" ] || bin_name="xray"
     local version
     local arch
     local zip_file
     local download_url
     local digest_url
-    local core_dir="$target_dir/xray-core"
+    local core_dir="$target_dir/$CORE_DIR_NAME"
     local tmp_dir
     local expected_sha=""
     local actual_sha=""
@@ -807,9 +816,12 @@ download_xray_core() {
     fi
 
     # Заменяем старое ядро только после успешной загрузки и проверки.
+    # Кладём ТОЛЬКО бинарник, переименованный в "$bin_name" (маскировка);
+    # geoip/geosite/LICENSE/README из релиза не нужны — Dockerfile берёт из
+    # папки лишь бинарник, а geo-файлы использует из базового образа.
     rm -rf "$core_dir"
     mkdir -p "$core_dir"
-    cp -a "$tmp_dir/unpack/." "$core_dir/"
+    cp -a "$tmp_dir/unpack/xray" "$core_dir/$bin_name"
     touch "$core_dir/.keep"
     rm -rf "$tmp_dir"
 
@@ -823,6 +835,7 @@ download_xray_core() {
 # из ${XRAY_REPO} нужно, только если хочешь зафиксировать конкретную версию ядра.
 setup_custom_core() {
     local target_dir="${1:-.}"
+    local process="${2:-xray}"
     local install_custom_core=""
     local xray_version=""
 
@@ -844,8 +857,9 @@ setup_custom_core() {
     echo ""
     echo -e "${CYAN}Selected Xray version: ${BOLD}${xray_version}${NC}"
 
-    if download_xray_core "$target_dir" "$xray_version"; then
-        echo -e "${GREEN}✓${NC} Xray core (${XRAY_REPO}) downloaded to $target_dir/xray-core/"
+    # Бинарник кладётся в папку сборки под именем процесса (маскировка).
+    if download_xray_core "$target_dir" "$xray_version" "$process"; then
+        echo -e "${GREEN}✓${NC} Core downloaded to $target_dir/$CORE_DIR_NAME/$process"
         echo -e "${GREEN}✓${NC} Core will be embedded in Docker image during build"
     else
         echo -e "${RED}✗${NC} Failed to download Xray core from ${XRAY_REPO}"
@@ -1016,7 +1030,7 @@ cmd_generate() {
             fi
 
             # Кастомное ядро (независимо от конфигурации .env)
-            setup_custom_core "$target_dir"
+            setup_custom_core "$target_dir" "$process"
 
             # Запуск
             echo ""
@@ -1162,7 +1176,7 @@ cmd_random() {
     fi
 
     # Кастомное ядро (независимо от конфигурации .env)
-    setup_custom_core "$target_dir"
+    setup_custom_core "$target_dir" "$process"
 
     # Запуск
     echo ""
