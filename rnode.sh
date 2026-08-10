@@ -189,6 +189,12 @@ RUN if [ -f /tmp/${CORE_DIR_NAME}/${process} ]; then \\
        > /usr/local/bin/rw-core && \\
     chmod +x /usr/local/bin/rw-core
 
+# Маскируем имя процесса ноды: приложение ставит process.title='rw-node',
+# из-за чего в ss/ps на порту ноды светится "rw-node". Патчим собранный dist,
+# меняя это имя на "${process}". Путь dist отличается в v2.7.0 и v3, поэтому
+# перебираем оба. Guarded: нет файла — шаг ничего не делает и не роняет сборку.
+RUN for f in /opt/app/dist/main.js /opt/app/dist/src/main.js; do [ -f "\$f" ] && sed -i 's/rw-node/${process}/g' "\$f"; done; true
+
 # Путь к фактическому бинарнику после переименования
 ENV RW_CORE_BINARY="/usr/local/bin/${process}"
 
