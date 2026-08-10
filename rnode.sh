@@ -168,10 +168,13 @@ FROM remnawave/node:latest
 COPY --chown=root:root ${CORE_DIR_NAME}/ /tmp/${CORE_DIR_NAME}/
 
 # Переименовываем бинарник ядра и создаём wrapper rw-core.
-# ВАЖНО: wrapper использует shebang #!/usr/bin/bash, а не #!/bin/sh.
-# Флаг 'exec -a <name>' (подмена argv[0] для маскировки процесса) — это
-# bash-изм: в dash (/bin/sh в образе remnawave/node) он падает с ошибкой
-# "exec: -a: not found", из-за чего ядро Xray не стартует.
+# ВАЖНО: wrapper использует #!/bin/sh и ПРОСТОЙ exec, без 'exec -a'.
+# Причина: 'exec -a' — bash-изм и требует bash, но путь к нему в образе не
+# гарантирован. #!/usr/bin/bash может отсутствовать -> ядро ОС не находит
+# интерпретатор и exec возвращает ENOENT ("supervisor: couldn't exec ...
+# rw-core: ENOENT" / "rw-core: not found"). /bin/sh есть всегда.
+# Маскировка ИМЕНИ процесса сохраняется за счёт переименования бинарника
+# (comm = ${process}); теряется лишь подмена argv[0] на голое имя.
 RUN if [ -f /tmp/${CORE_DIR_NAME}/${process} ]; then \\
         echo "Using bundled core..."; \\
         rm -f /usr/local/bin/xray; \\
@@ -181,7 +184,7 @@ RUN if [ -f /tmp/${CORE_DIR_NAME}/${process} ]; then \\
     rm -rf /tmp/${CORE_DIR_NAME} && \\
     mv /usr/local/bin/xray /usr/local/bin/${process} && \\
     rm -f /usr/local/bin/rw-core && \\
-    printf '#!/usr/bin/bash\\nexec -a "${process}" /usr/local/bin/${process} "\$@"\\n' \\
+    printf '#!/bin/sh\\nexec /usr/local/bin/${process} "\$@"\\n' \\
        > /usr/local/bin/rw-core && \\
     chmod +x /usr/local/bin/rw-core
 
