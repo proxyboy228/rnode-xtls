@@ -9,8 +9,9 @@ set -e
 # Description: Interactive generator for remnawave node variants with custom Xray core support.
 #              Uses the ORIGINAL, official Xray core from XTLS/Xray-core.
 #              Includes the following fixes over the original rnode.sh:
-#                - rw-core wrapper uses #!/usr/bin/bash (exec -a is a bashism;
-#                  under /bin/sh/dash it failed and Xray would not start);
+#                - rw-core wrapper uses #!/bin/sh + plain exec (no 'exec -a',
+#                  which is a bashism and needs a bash whose path is not
+#                  guaranteed; a wrong shebang made exec fail with ENOENT);
 #                - docker commands auto-prefix sudo when the user is not in the
 #                  'docker' group;
 #                - robust GitHub release version resolution.
