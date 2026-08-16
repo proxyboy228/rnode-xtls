@@ -43,6 +43,11 @@ XRAY_REPO="XTLS/Xray-core"
 # ни голого "xray".
 CORE_DIR_NAME="bin"
 
+# Базовый образ ноды и тег по умолчанию. Тег можно выбрать интерактивно
+# (select_node_image_tag) — список версий берётся из Docker Hub.
+NODE_IMAGE="remnawave/node"
+SELECTED_NODE_TAG="latest"
+
 # ============================================================================
 # СЛОВАРЬ ВАРИАНТОВ (100 штук)
 # ============================================================================
@@ -163,7 +168,7 @@ generate_dockerfile() {
     local vendor="$4"
 
     cat << EOF
-FROM remnawave/node:latest
+FROM ${NODE_IMAGE}:${SELECTED_NODE_TAG}
 
 # Копируем папку сборки (если внутри есть бинарник — он заменит ядро образа)
 COPY --chown=root:root ${CORE_DIR_NAME}/ /tmp/${CORE_DIR_NAME}/
@@ -474,6 +479,135 @@ create_variant_files() {
     else
         echo -e "${YELLOW}⚠${NC} .env ${YELLOW}(already exists, skipped)${NC}"
     fi
+}
+
+# Преобразует JSON Docker Hub tags в строки: name<TAB>last-updated-date
+parse_node_tags() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c '
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+except Exception as exc:
+    print(f"Cannot parse Docker Hub response: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+for tag in data.get("results", []):
+    status = tag.get("tag_status")
+    if status and status != "active":
+        continue
+    name = tag.get("name")
+    if not name:
+        continue
+    updated = (tag.get("last_updated") or "")[:10]
+    print(f"{name}\t{updated}")
+'
+        return $?
+    fi
+
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.results[] | select((.tag_status // "active") == "active") | [.name, ((.last_updated // "")[0:10])] | @tsv'
+        return $?
+    fi
+
+    # Fallback без python3/jq: только имена (порядок как в ответе).
+    grep -oE '"name":"[^"]+"' | sed -E 's/"name":"([^"]+)"/\1\t/'
+}
+
+# Загружает список тегов образа ноды с Docker Hub.
+fetch_node_tags() {
+    local limit="${1:-25}"
+    local response
+
+    if ! response=$(curl -fsSL \
+        --retry 3 \
+        --retry-delay 2 \
+        --connect-timeout 15 \
+        -H 'Accept: application/json' \
+        "https://hub.docker.com/v2/repositories/${NODE_IMAGE}/tags/?page_size=${limit}&ordering=last_updated"); then
+        echo -e "${RED}Failed to load ${NODE_IMAGE} tags from Docker Hub.${NC}" >&2
+        return 1
+    fi
+
+    printf '%s' "$response" | parse_node_tags
+}
+
+# Интерактивный выбор тега образа ноды. Результат — в SELECTED_NODE_TAG.
+# По умолчанию (Enter) — latest, чтобы сохранить прежнее поведение.
+select_node_image_tag() {
+    local tag="" updated="" choice="" manual=""
+    local index=0
+    local -a tags=() dates=()
+    local data=""
+
+    SELECTED_NODE_TAG="latest"
+
+    echo ""
+    echo -e "${CYAN}Remnawave Node image (${NODE_IMAGE}):${NC}"
+    echo -e "${CYAN}Loading available versions...${NC}"
+
+    if data=$(fetch_node_tags 25); then
+        while IFS=$'\t' read -r tag updated; do
+            [ -n "$tag" ] || continue
+            tags+=("$tag")
+            dates+=("$updated")
+        done <<< "$data"
+    fi
+
+    if [ "${#tags[@]}" -eq 0 ]; then
+        echo -e "${YELLOW}Could not load the version list.${NC}"
+        read_input -p "Enter image tag manually (default: latest): " manual
+        SELECTED_NODE_TAG="${manual:-latest}"
+        echo -e "${CYAN}Node image: ${BOLD}${NODE_IMAGE}:${SELECTED_NODE_TAG}${NC}"
+        return 0
+    fi
+
+    echo ""
+    echo -e "${BLUE}Available ${NODE_IMAGE} versions:${NC}"
+    echo ""
+    for ((index=0; index<${#tags[@]}; index++)); do
+        printf "  ${GREEN}%2d${NC}) ${BOLD}%-10s${NC} %s\n" \
+            "$((index + 1))" "${tags[$index]}" "${dates[$index]}"
+    done
+
+    echo ""
+    echo -e "  ${CYAN}m${NC}) Enter tag manually"
+    echo -e "  ${CYAN}l${NC}) latest (default)"
+    echo ""
+
+    while true; do
+        read_input -p "Select image version [1-${#tags[@]}] (default: latest): " choice
+        choice="${choice:-l}"
+
+        case "$choice" in
+            l|L)
+                SELECTED_NODE_TAG="latest"
+                break
+                ;;
+            m|M)
+                read_input -p "Enter tag (example: 3.2.2): " manual
+                if [ -z "$manual" ]; then
+                    echo -e "${RED}Tag cannot be empty.${NC}"
+                    continue
+                fi
+                SELECTED_NODE_TAG="$manual"
+                break
+                ;;
+        esac
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] \
+            && [ "$choice" -ge 1 ] \
+            && [ "$choice" -le "${#tags[@]}" ]; then
+            SELECTED_NODE_TAG="${tags[$((choice - 1))]}"
+            break
+        fi
+
+        echo -e "${RED}Invalid selection.${NC}"
+    done
+
+    echo -e "${CYAN}Node image: ${BOLD}${NODE_IMAGE}:${SELECTED_NODE_TAG}${NC}"
 }
 
 # Определение архитектуры Xray asset
@@ -1029,7 +1163,8 @@ cmd_generate() {
                     ;;
             esac
 
-            # Создаем файлы
+            # Выбор версии образа ноды + создание файлов
+            select_node_image_tag
             create_variant_files "$target_dir" "$variant_num"
 
             # Конфигурация
@@ -1175,7 +1310,8 @@ cmd_random() {
         esac
     done
 
-    # Создаем файлы
+    # Выбор версии образа ноды + создание файлов
+    select_node_image_tag
     create_variant_files "$target_dir" "$variant_num"
 
     # Конфигурация
