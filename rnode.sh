@@ -397,6 +397,50 @@ get_docker_compose_cmd() {
     fi
 }
 
+# Проверяет наличие Docker и при отсутствии ставит его официальным
+# скриптом https://get.docker.com. Возвращает 0, если docker доступен
+# (уже был или успешно установлен), иначе 1.
+ensure_docker() {
+    if command -v docker &> /dev/null; then
+        return 0
+    fi
+
+    echo -e "${YELLOW}Docker не найден. Устанавливаю через get.docker.com...${NC}"
+
+    if ! command -v curl &> /dev/null; then
+        echo -e "${RED}Error: curl не найден — нечем скачать установщик Docker${NC}"
+        return 1
+    fi
+
+    local sudo_prefix=""
+    if [ "$(id -u)" -ne 0 ]; then
+        if command -v sudo &> /dev/null; then
+            sudo_prefix="sudo "
+        else
+            echo -e "${RED}Error: для установки Docker нужен root или sudo${NC}"
+            return 1
+        fi
+    fi
+
+    if ! curl -fsSL https://get.docker.com | ${sudo_prefix}sh; then
+        echo -e "${RED}✗ Не удалось установить Docker${NC}"
+        return 1
+    fi
+
+    # Поднимаем и включаем демон, если в системе есть systemd
+    if command -v systemctl &> /dev/null; then
+        ${sudo_prefix}systemctl enable --now docker &> /dev/null || true
+    fi
+
+    if command -v docker &> /dev/null; then
+        echo -e "${GREEN}✓${NC} Docker установлен: $(docker --version | cut -d' ' -f3 | tr -d ',')"
+        return 0
+    fi
+
+    echo -e "${RED}✗ Docker установлен, но команда 'docker' недоступна${NC}"
+    return 1
+}
+
 get_variant_data() {
     local idx="$1"
     local field="$2"
@@ -1185,6 +1229,11 @@ cmd_generate() {
                 echo "Starting container..."
                 cd "$target_dir"
 
+                if ! ensure_docker; then
+                    read_input -p "Press Enter to continue..."
+                    return
+                fi
+
                 DOCKER_COMPOSE_CMD=$(get_docker_compose_cmd)
                 if [ -z "$DOCKER_COMPOSE_CMD" ]; then
                     echo -e "${RED}Error: docker-compose or docker compose not found${NC}"
@@ -1331,6 +1380,11 @@ cmd_random() {
         echo ""
         echo "Starting container..."
         cd "$target_dir"
+
+        if ! ensure_docker; then
+            read_input -p "Press Enter to continue..."
+            return
+        fi
 
         DOCKER_COMPOSE_CMD=$(get_docker_compose_cmd)
         if [ -z "$DOCKER_COMPOSE_CMD" ]; then
